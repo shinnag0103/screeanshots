@@ -33,7 +33,8 @@ LAT_REF = LIGHT_LAT
 M_PER_DEG_LAT = 111320.0
 M_PER_DEG_LON = 111320.0 * math.cos(math.radians(LAT_REF))
 LON0, LON1 = 133.1160, 133.2700
-LAT0, LAT1 = 34.3555, 34.4168
+# North is cut close to the shore so the three text columns fit on the page.
+LAT0, LAT1 = 34.3555, 34.4131
 
 # Charted hazards only. Labels stay generic. Positions are the aid on the
 # hazard, from the light list or a notice to mariners, not from groundings.
@@ -407,7 +408,7 @@ def main():
         ("bridge channel", 34.4090, 133.2170, True),
         ("tosaki", 34.4000, 133.2450, True),
         ("miyuki", 34.3820, 133.1720, True),
-        ("shore hinterland", 34.4160, 133.2000, False),
+        ("shore hinterland", 34.4126, 133.2000, False),
         ("mukaijima", 34.3950, 133.2000, False),
         ("momoshima", 34.3720, 133.2700, False),
         ("lighthouse point", LIGHT_LAT, LIGHT_LON, False),
@@ -561,7 +562,7 @@ def main():
 <html lang="ja">
 <head>
 <meta charset="utf-8"/>
-<title>運航基準図　尾道水道と付近</title>
+<title>ネコノテ観光業運航基準図　尾道水道と付近</title>
 <style>
   @page {{ size: A3 landscape; margin: 0; }}
   * {{ box-sizing: border-box; }}
@@ -710,12 +711,12 @@ def main():
 <article class="sheet">
   <header>
     <div>
-      <h1>運航基準図<span>尾道水道と南の瀬戸　黒点は発着場、赤の×は暗礁か浅瀬。赤線は2m、赤点線は干出岩、薄緑は干潟。桟橋は結ばない</span></h1>
+      <h1>ネコノテ観光業運航基準図<span>尾道水道と南の瀬戸　黒点は発着場、赤の×は暗礁か浅瀬。赤線は2m、赤点線は干出岩、薄緑は干潟</span></h1>
     </div>
     <div class="meta">
-      <div>発着場は独立　<b>尾道中央桟橋</b>・<b>新浜桟橋</b></div>
+      <div>発着場　<b>尾道中央桟橋</b>・<b>新浜桟橋</b></div>
       <div>海図 W119・W114・W1117・W1118　世界測地系　令和8年11月13日</div>
-      <div class="blanks">事業者名　<b>ネコノテ観光業</b>　船舶名　<b>ネコノテ観光業</b>　航海速力＿＿kn</div>
+      <div class="blanks">事業者名　<b>ネコノテ観光業</b>　船舶名　<b>ネコノテ観光業</b>　航海速力　<b>18</b> kn</div>
     </div>
   </header>
   <div class="main">
@@ -734,7 +735,7 @@ def main():
         {pier_mark(*CHUO, "中央桟橋", -210)}
         {pier_mark(*NIIHAMA, "新浜桟橋", -210)}
         {label(LIGHT_LAT, LIGHT_LON, "尾道灯台", dx=70, dy=150, anchor="start")}
-        {label(34.4145, 133.2050, "尾道")}
+        {label(34.4108, 133.2065, "尾道")}
         {label(34.3880, 133.2050, "向島")}
         {label(34.3840, 133.1580, "岩子島")}
         {label(34.3745, 133.2680, "百島")}
@@ -772,7 +773,7 @@ def main():
           <tr><th>自</th><th>至</th><th>針路</th><th>海里</th><th>m</th></tr>
           {row_chuo}
         </table>
-        <p>針路は真方位で、1度単位。距離は無流の概算で、潮流の偏位を含まない。航海速力は船舶の速力基準による。中央桟橋の②の南を、土堂―兼吉の渡船が横断する。</p>
+        <p>針路は真方位で、1度単位。距離は無流の概算で、潮流の偏位を含まない。航海速力は18ノット。中央桟橋の②の南を、土堂―兼吉の渡船が横断する。</p>
       </section>
       <section class="caution">
         <h2>（2）地形・水深・潮流で特に留意する箇所</h2>
@@ -796,7 +797,6 @@ def main():
           <li>第三区では、岸壁又は桟橋に係留中の船舶の船側に係留しない。区界は海図W119で確認する。</li>
           <li>旅客船、漁船、作業船、プレジャーボートがふくそうする。大型船の通航を妨げない。</li>
           <li>視程が低下したときは減速し、見張りを増やす。安全な速力を保てなければ反転又は待機する。</li>
-          <li>離桟時と着桟時に、地点名、時刻、天候、風向、風速、波浪、視程を運航管理者へ連絡する。</li>
           <li>中央桟橋は、尾道みなと祭と住吉花火大会の日は休業する。</li>
           <li>緊急通報は118。尾道海上保安部（港長）0848-22-2108、尾道市古浜町。</li>
           <li>発航前に海図、潮汐表、水路通報、当日の潮流推算を確認する。低潮時は×印の暗礁と浅瀬へ近づかない。</li>
