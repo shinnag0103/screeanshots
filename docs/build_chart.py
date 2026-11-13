@@ -20,6 +20,8 @@ BRIDGES = COAST["bridges"]
 _HONDEX = json.loads((ROOT / "depth2.json").read_text())
 RED_LINES = _HONDEX["red"]
 GREEN_LINES = _HONDEX["green"]
+# Dark-green tidal polygons, plus any loop the green line closes by itself.
+FLAT_RINGS = _HONDEX["flats"]
 
 # Wide band of the channel and the sets to the south of it. North sits just
 # inland of the Honshu shore. The window is sized to the map panel so the
@@ -218,6 +220,68 @@ def coast_d(project):
     return "".join(parts)
 
 
+def _metres(a, b):
+    return math.hypot((a[0] - b[0]) * M_PER_DEG_LON, (a[1] - b[1]) * M_PER_DEG_LAT)
+
+
+def closed_rings(lines, tol_m=25.0):
+    rings = []
+    for line in lines:
+        if len(line) < 4 or _metres(line[0], line[-1]) > tol_m:
+            continue
+        ring = list(line)
+        if ring[0] != ring[-1]:
+            ring.append(ring[0])
+        rings.append(ring)
+    return rings
+
+
+def _run_len(run):
+    return sum(_metres(a, b) for a, b in zip(run, run[1:]))
+
+
+def water_only(lines, mask, nx, ny, lon0, lat1, cell):
+    """Drop the parts of a line that sit on land."""
+    kept = []
+    for line in lines:
+        run = []
+        for lon, lat in line:
+            if is_land_at(lat, lon, mask, nx, ny, lon0, lat1, cell):
+                if len(run) >= 2 and _run_len(run) >= 12:
+                    kept.append(run)
+                run = []
+            else:
+                run.append([lon, lat])
+        if len(run) >= 2 and _run_len(run) >= 12:
+            kept.append(run)
+    return kept
+
+
+def shoal_fill(land_polys, lon0, lat0, lon1, lat1, cell, cover=None):
+    """Light green on water inside a tidal polygon or a closed green line.
+
+    cover is the land mask actually painted, so the green edge is not drawn
+    on top of that land.
+    """
+    land_mask, nx, ny = raster_land(land_polys, lon0, lat0, lon1, lat1, cell)
+    rings = list(FLAT_RINGS) + closed_rings(GREEN_LINES)
+    flat_mask, fnx, fny = raster_land(rings, lon0, lat0, lon1, lat1, cell)
+    if (fnx, fny) != (nx, ny):
+        raise RuntimeError("shoal grid does not match the land grid")
+    cover_mask, cover_nx, cover_ny, cover_cell = cover if cover else (land_mask, nx, ny, cell)
+    for y in range(ny):
+        lat = lat1 - (y + 0.5) * cell / M_PER_DEG_LAT
+        for x in range(nx):
+            i = y * nx + x
+            if not flat_mask[i]:
+                continue
+            lon = lon0 + (x + 0.5) * cell / M_PER_DEG_LON
+            if land_mask[i] or is_land_at(lat, lon, cover_mask, cover_nx, cover_ny, lon0, lat1, cover_cell):
+                flat_mask[i] = 0
+    edge = water_only(GREEN_LINES, cover_mask, cover_nx, cover_ny, lon0, lat1, cover_cell)
+    return land_path(flat_mask, nx, ny, cell), edge
+
+
 def contour_d(lines, project, lon0, lat0, lon1, lat1):
     """Lines that meet the window."""
     parts = []
@@ -277,8 +341,11 @@ def inset(title, lon0, lat0, lon1, lat1, route, ferry, note, polygons):
             print(f"INSET POINT ON LAND {title} {lat:.5f},{lon:.5f}", file=sys.stderr)
     land = land_path(mask, nx, ny, cell)
     coast = coast_d(project)
+    shoal, edge = shoal_fill(
+        polygons, lon0, lat0, lon1, lat1, cell, cover=(mask, nx, ny, cell)
+    )
     depth = contour_d(RED_LINES, project, lon0, lat0, lon1, lat1)
-    flat = contour_d(GREEN_LINES, project, lon0, lat0, lon1, lat1)
+    flat = contour_d(edge, project, lon0, lat0, lon1, lat1)
     x1, y1 = project(route[0][1], route[0][0])
     x2, y2 = project(route[1][1], route[1][0])
     ang = math.atan2(y2 - y1, x2 - x1)
@@ -301,6 +368,7 @@ def inset(title, lon0, lat0, lon1, lat1, route, ferry, note, polygons):
     return f"""<svg class="inset" viewBox="0 0 {width:.0f} {height:.0f}" xmlns="http://www.w3.org/2000/svg">
       <rect width="{width:.0f}" height="{height:.0f}" fill="#d5e3ee"/>
       <path d="{land}" class="land"/>
+      <path d="{shoal}" class="shoal"/>
       <path d="{coast}" class="icoast"/>
       <path d="{flat}" class="iflat"/>
       <path d="{depth}" class="id2"/>
@@ -374,8 +442,12 @@ def main():
     land = land_path(mask, nx, ny, cell)
     coast = coast_d(lambda lon, lat: (mx(lon), my(lat)))
     project = lambda lon, lat: (mx(lon), my(lat))
+    shoal, edge = shoal_fill(
+        polygons, LON0, LAT0, LON1, LAT1, 8.0, cover=(mask, nx, ny, cell)
+    )
+    print(f"green edge pieces off the land {len(edge)}")
     depth = contour_d(RED_LINES, project, LON0, LAT0, LON1, LAT1)
-    flat = contour_d(GREEN_LINES, project, LON0, LAT0, LON1, LAT1)
+    flat = contour_d(edge, project, LON0, LAT0, LON1, LAT1)
     on_land = 0
     seen = 0
     for line in RED_LINES:
@@ -538,6 +610,7 @@ def main():
   }}
   svg.map {{ width: 100%; height: 100%; display: block; }}
   .land {{ fill: #efe6d6; }}
+  .shoal {{ fill: #cfe8c4; }}
   .coast {{ fill: none; stroke: #243038; stroke-width: 16; stroke-linejoin: round; stroke-linecap: round; }}
   .flat {{ fill: none; stroke: #0c6b28; stroke-width: 14; stroke-linejoin: round; stroke-linecap: round; }}
   .d2 {{ fill: none; stroke: #d10000; stroke-width: 16; stroke-linejoin: round; stroke-linecap: round; }}
@@ -630,7 +703,7 @@ def main():
 <article class="sheet">
   <header>
     <div>
-      <h1>運航基準図<span>尾道水道と南の瀬戸　黒点は発着場、赤の×は暗礁か浅瀬。赤線は2m、緑線は干潟。桟橋は結ばない</span></h1>
+      <h1>運航基準図<span>尾道水道と南の瀬戸　黒点は発着場、赤の×は暗礁か浅瀬。赤線は2m、薄緑は干潟。桟橋は結ばない</span></h1>
     </div>
     <div class="meta">
       <div>発着場は独立　<b>尾道中央桟橋</b>・<b>新浜桟橋</b></div>
@@ -642,6 +715,7 @@ def main():
     <div class="mapwrap">
       <svg class="map" viewBox="0 0 {w_m:.0f} {h_m:.0f}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
         <path d="{land}" class="land"/>
+        <path d="{shoal}" class="shoal"/>
         {grid()}
         <path d="{coast}" class="coast"/>
         <path d="{flat}" class="flat"/>
@@ -697,12 +771,12 @@ def main():
         <p class="sub">尾道水道の潮流</p>
         <p>東流の最強は2.7ノット、西流の最強は2.5ノット。東流は尾道の低潮の約40分後から高潮の約40分後までで、最強は高潮の約2時間25分前。西流は高潮の約40分後から低潮の約40分後までで、最強は低潮の約2時間25分前。転流は来島海峡より約15分遅れる。当日の推算で確認する。流れは岸にほぼ並行するので、離着桟は当て舵と増減速の余裕を持つ。</p>
         <p class="sub">水深と狭い水面</p>
-        <p>水道の西口は約9m。戸崎瀬戸側の最狭部は幅約50m、水深約4mの箇所がある。尾道灯台が水道へ突出する。第二航路は中心線の両側各25mで、この最狭部ではこの幅が可航幅になる。法線は海図W119に従う。赤線はHONDEXの2m等深線、緑線は干潟。岸側が浅い。魚探の地形図であり、海図W119の等深線そのものではない。</p>
+        <p>水道の西口は約9m。戸崎瀬戸側の最狭部は幅約50m、水深約4mの箇所がある。尾道灯台が水道へ突出する。第二航路は中心線の両側各25mで、この最狭部ではこの幅が可航幅になる。法線は海図W119に従う。赤線はHONDEXの2m等深線。薄緑は干潟で、緑線と岸の間、および緑線に囲まれた範囲。魚探の地形図であり、海図W119の等深線そのものではない。</p>
         <p class="sub">暗礁と浅瀬（海図W119・W114、灯台表）</p>
         <p>細島北端の西北西、34°22′24″N 133°08′21″E。灯標が暗礁の上に立つ。北が航路、南は島と干出する浅瀬。灯台表4471。島の西側は大潮で干出する浅瀬で、灯台表4472.5の灯浮標（佐木島灯台の北北東方約1.6km）がその北西側を示す。図の浅瀬は干出部の概位。</p>
         <p>布刈瀬戸、34°21.9′N 133°10.4′E。干出する岩の灯浮標で、大浜埼灯台の北方約760m。岩は灯浮標と南の岬の間にもあるので、灯浮標の陸側を通らない。水路通報（書誌411の4470）、海図W119・W114。</p>
         <p>三原瀬戸側、34°21.6′N 133°07.5′E。岩の上に灯標がある。灯台表4472。佐木島灯台の南東方約2.1kmと約2.4kmにも暗礁と浅瀬の灯浮標がある。図の西端なので、通るときは海図で位置を見る。</p>
-        <p>渡船は土堂―兼吉と駅前―富浜。福本渡船は令和7年3月31日廃止。戸崎瀬戸にも横断する船がある。布刈瀬戸は大型船が多く潮流が強い。横島・百島方面の定置網とのり養殖は、水路誌では距岸約3海里に及ぶ。低潮時は赤線の岸側、緑線の干潟、×印の暗礁と浅瀬に近づかない。</p>
+        <p>渡船は土堂―兼吉と駅前―富浜。福本渡船は令和7年3月31日廃止。戸崎瀬戸にも横断する船がある。布刈瀬戸は大型船が多く潮流が強い。横島・百島方面の定置網とのり養殖は、水路誌では距岸約3海里に及ぶ。低潮時は赤線の岸側、薄緑の干潟、×印の暗礁と浅瀬に近づかない。</p>
       </section>
       <section class="other">
         <h2>（3）航行の安全を確保するため必要な事項</h2>
@@ -724,7 +798,7 @@ def main():
   </div>
   <footer>
     出典：海上保安庁『瀬戸内海水路誌』追補（書誌103、令和8年1月30日）の尾道水道、阿伏兎瀬戸～戸崎瀬戸。灯台表（書誌411）4470・4471・4472・4472.5。布刈瀬戸の灯浮標は水路通報第48号（令和7年、海図W119・W114）。細島西側の干出する浅瀬の概位は、その灯浮標が示す干出部。港則法第3条・第11条・第12条・第13条・第16条・第18条。港則法施行規則第34条・別表第二。中央桟橋の位置はおのみち海の駅の公表値。新浜桟橋、渡船場、岸線はOpenStreetMap（令和8年11月）を模式化。
-    本図は運航基準の模式図であり、航海用海図ではない。範囲は尾道水道と南の瀬戸で、北は岸の直後で切る。針路と距離は世界測地系の概算。赤線はWeb海図 by HONDEXの2m等深線、緑線は同図の干潟で、海図W119の等深線ではない。暗礁と浅瀬の位置は灯台表と水路通報による。航海には最新の海図、潮汐表、水路通報と、船長の判断を用いる。印刷はA3横、倍率100%、余白なし。
+    本図は運航基準の模式図であり、航海用海図ではない。範囲は尾道水道と南の瀬戸で、北は岸の直後で切る。針路と距離は世界測地系の概算。赤線はWeb海図 by HONDEXの2m等深線。薄緑は同図の干潟で、海図W119の等深線ではない。暗礁と浅瀬の位置は灯台表と水路通報による。航海には最新の海図、潮汐表、水路通報と、船長の判断を用いる。印刷はA3横、倍率100%、余白なし。
   </footer>
 </article>
 </body>
