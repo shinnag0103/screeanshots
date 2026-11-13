@@ -1,27 +1,40 @@
 #!/usr/bin/env python3
-"""Build the one-page Onomichi operational-standard chart."""
+"""One-page operational chart for Onomichi, about 10 km from the port.
+
+The two piers are independent berths. The chart does not join them.
+"""
 
 import json
 import math
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 COAST = json.loads((ROOT / "coast.json").read_text())
+LINES = COAST["lines"]  # [lon, lat]
+BRIDGES = COAST["bridges"]
 
-LON0, LON1 = 133.1705, 133.2215
-LAT0, LAT1 = 34.3938, 34.4132
-LAT_REF = 34.403
+# 10 km circle is centered on the published light, inside Onomichi port.
+LIGHT_LAT, LIGHT_LON = 34.401780, 133.195424
+HALF_M = 11500.0
+LAT_REF = LIGHT_LAT
 M_PER_DEG_LAT = 111320.0
 M_PER_DEG_LON = 111320.0 * math.cos(math.radians(LAT_REF))
+LON0 = LIGHT_LON - HALF_M / M_PER_DEG_LON
+LON1 = LIGHT_LON + HALF_M / M_PER_DEG_LON
+LAT0 = LIGHT_LAT - HALF_M / M_PER_DEG_LAT
+LAT1 = LIGHT_LAT + HALF_M / M_PER_DEG_LAT
 
+CHUO = (34.407550, 133.202417)  # おのみち海の駅「海から」
+NIIHAMA = (34.398801, 133.177452)  # OSM 尾道港 新浜桟橋
+# Short departure/arrival only. The channel lies south of each pier.
+CHUO_OFF = (CHUO[0] - 150.0 / M_PER_DEG_LAT, CHUO[1])
+NIIHAMA_OFF = (NIIHAMA[0] - 180.0 / M_PER_DEG_LAT, NIIHAMA[1])
 
-def mx(lon: float) -> float:
-    return (lon - LON0) * M_PER_DEG_LON
-
-
-def my(lat: float) -> float:
-    return (LAT1 - lat) * M_PER_DEG_LAT
-
+FERRIES = [
+    ((34.406650, 133.200783), (34.405173, 133.202675), "土堂―兼吉"),
+    ((34.403101, 133.193126), (34.400215, 133.197234), "駅前―富浜"),
+]
 
 def fmt_lat(lat: float) -> str:
     minutes = (lat - int(lat)) * 60
@@ -43,217 +56,368 @@ def rhumb(lat1, lon1, lat2, lon2):
     return (math.degrees(theta) + 360) % 360, dist
 
 
-# Tracks sit inside the sounded channel. Courses below are the rhumb lines
-# of these vertices, which were checked against the coastline profile.
-WEST = [
-    ("①", "中央桟橋前面", 34.40670, 133.20242),
-    ("②", "灯台東方", 34.40470, 133.19760),
-    ("③", "駅前渡船沖", 34.40220, 133.19313),
-    ("④", "新浜東方", 34.39910, 133.18500),
-    ("⑤", "新浜桟橋前面", 34.39810, 133.17745),
-]
-EAST = [
-    ("⑤", "新浜桟橋前面", 34.39810, 133.17745),
-    ("⑥", "新浜沖・南側", 34.39655, 133.17830),
-    ("⑦", "西弯の南", 34.39735, 133.18650),
-    ("⑧", "灯台南西", 34.39950, 133.19180),
-    ("⑨", "灯台狭部", 34.40255, 133.19430),
-    ("⑩", "灯台の東", 34.40350, 133.19680),
-    ("⑪", "土堂沖・南", 34.40505, 133.20020),
-    ("⑫", "兼吉沖", 34.40530, 133.20230),
-    ("①", "中央桟橋前面", 34.40670, 133.20242),
-]
-
-PIERS = {
-    "中央桟橋": (34.407550, 133.202417),
-    "新浜桟橋": (34.398801, 133.177452),
-    "土堂": (34.406650, 133.200783),
-    "兼吉": (34.405173, 133.202675),
-    "駅前": (34.403101, 133.193126),
-    "富浜": (34.400215, 133.197234),
-    "灯台": (34.401780, 133.195424),
-}
+def mx(lon: float) -> float:
+    return (lon - LON0) * M_PER_DEG_LON
 
 
-def legs(points):
-    rows = []
-    total = 0.0
-    for a, b in zip(points, points[1:]):
-        bearing, dist = rhumb(a[2], a[3], b[2], b[3])
-        total += dist
-        rows.append((a, b, bearing, dist))
-    return rows, total
+def my(lat: float) -> float:
+    return (LAT1 - lat) * M_PER_DEG_LAT
 
 
-WEST_LEGS, WEST_M = legs(WEST)
-EAST_LEGS, EAST_M = legs(EAST)
+def _cross_vertical(a, b, lon_edge):
+    if (a[0] - lon_edge) * (b[0] - lon_edge) > 0:
+        return None
+    if b[0] == a[0]:
+        return None
+    t = (lon_edge - a[0]) / (b[0] - a[0])
+    if t < 0 or t > 1:
+        return None
+    return (lon_edge, a[1] + t * (b[1] - a[1]))
 
 
-def leg_row(a, b, bearing, dist):
-    nm = dist / 1852
-    return (
-        f"<tr><td>{a[0]} {a[1]}</td><td>{b[0]} {b[1]}</td>"
+def land_polygons(lines):
+    """Closed island rings, plus mainland closed along the north edge of the view.
+
+    Coastline rings are kept with land on the left, so a positive area is an island.
+    """
+    polys = []
+    for line in lines:
+        gap = math.hypot(line[0][0] - line[-1][0], line[0][1] - line[-1][1])
+        if gap < 1e-4:
+            area = 0.0
+            for a, b in zip(line, line[1:]):
+                area += a[0] * b[1] - b[0] * a[1]
+            if area > 0:
+                polys.append(line)
+            continue
+        hits = []
+        for i, (a, b) in enumerate(zip(line, line[1:])):
+            for edge in (LON0, LON1):
+                point = _cross_vertical(a, b, edge)
+                if point is not None:
+                    hits.append((i, edge, point))
+        if len(hits) < 2:
+            continue
+        # The mainland enters the west edge and leaves the east edge.
+        west = [h for h in hits if h[1] == LON0]
+        east = [h for h in hits if h[1] == LON1]
+        if len(west) == 1 and len(east) == 1 and west[0][0] < east[0][0]:
+            i0, _, p0 = west[0]
+            i1, _, p1 = east[0]
+            polys.append(
+                [p0] + line[i0 + 1 : i1 + 1] + [p1, (LON1, LAT1), (LON0, LAT1), p0]
+            )
+        elif len(hits) == 2 and hits[0][1] == hits[1][1] and hits[0][0] < hits[1][0]:
+            # An island clipped by one side of the view. Close along that edge.
+            i0, _, p0 = hits[0]
+            i1, _, p1 = hits[1]
+            polys.append([p0] + line[i0 + 1 : i1 + 1] + [p1, p0])
+    return polys
+
+
+def raster_land(polygons, lon0, lat0, lon1, lat1, cell):
+    width = (lon1 - lon0) * M_PER_DEG_LON
+    height = (lat1 - lat0) * M_PER_DEG_LAT
+    nx = max(1, int(round(width / cell)))
+    ny = max(1, int(round(height / cell)))
+    mask = bytearray(nx * ny)
+
+    def px(lon):
+        return (lon - lon0) * M_PER_DEG_LON / cell
+
+    def py(lat):
+        return (lat1 - lat) * M_PER_DEG_LAT / cell
+
+    for poly in polygons:
+        buckets = [[] for _ in range(ny)]
+        for a, b in zip(poly, poly[1:]):
+            x1, y1 = px(a[0]), py(a[1])
+            x2, y2 = px(b[0]), py(b[1])
+            if y1 == y2:
+                continue
+            if y1 > y2:
+                x1, y1, x2, y2 = x2, y2, x1, y1
+            y_start = max(0, math.ceil(y1 - 1e-9))
+            y_end = min(ny, math.ceil(y2 - 1e-9))
+            span = y2 - y1
+            for y in range(y_start, y_end):
+                if y < y1 or y >= y2:
+                    continue
+                buckets[y].append(x1 + (y - y1) / span * (x2 - x1))
+        for y, row in enumerate(buckets):
+            if len(row) < 2:
+                continue
+            row.sort()
+            base = y * nx
+            for i in range(0, len(row) - 1, 2):
+                xa, xb = row[i], row[i + 1]
+                i0 = max(0, math.ceil(xa - 0.5))
+                i1 = min(nx, math.floor(xb - 0.5) + 1)
+                for x in range(i0, i1):
+                    mask[base + x] = 1
+    return mask, nx, ny
+
+
+def land_path(mask, nx, ny, cell):
+    parts = []
+    for y in range(ny):
+        x = 0
+        row = y * nx
+        while x < nx:
+            if not mask[row + x]:
+                x += 1
+                continue
+            x2 = x + 1
+            while x2 < nx and mask[row + x2]:
+                x2 += 1
+            parts.append(
+                f"M{x * cell:.0f},{y * cell:.0f}h{(x2 - x) * cell:.0f}v{cell:.0f}h{-(x2 - x) * cell:.0f}z"
+            )
+            x = x2
+    return "".join(parts)
+
+
+def is_land_at(lat, lon, mask, nx, ny, lon0, lat1, cell):
+    x = int((lon - lon0) * M_PER_DEG_LON / cell)
+    y = int((lat1 - lat) * M_PER_DEG_LAT / cell)
+    if not (0 <= x < nx and 0 <= y < ny):
+        return False
+    return mask[y * nx + x] == 1
+
+
+def coast_d(project):
+    parts = []
+    for line in LINES:
+        x, y = project(line[0][0], line[0][1])
+        parts.append(f"M{x:.0f},{y:.0f}")
+        for lon, lat in line[1:]:
+            x, y = project(lon, lat)
+            parts.append(f"L{x:.0f},{y:.0f}")
+    return "".join(parts)
+
+
+def bridge_d(project):
+    parts = []
+    for bridge in BRIDGES:
+        pts = bridge["pts"]
+        x, y = project(pts[0][0], pts[0][1])
+        seg = [f"M{x:.0f},{y:.0f}"]
+        for lon, lat in pts[1:]:
+            x, y = project(lon, lat)
+            seg.append(f"L{x:.0f},{y:.0f}")
+        parts.append("".join(seg))
+    return parts
+
+
+def is_water_at(lat, lon, water, blocked, nx, gx, gy):
+    x, y = gx(lon), gy(lat)
+    if not (0 <= x < nx and 0 <= y < len(water) // nx):
+        return False
+    return water[y * nx + x] == 1
+
+
+def leg_row(name_a, lat_a, lon_a, name_b, lat_b, lon_b):
+    bearing, dist = rhumb(lat_a, lon_a, lat_b, lon_b)
+    return bearing, dist, (
+        f"<tr><td>{name_a}</td><td>{name_b}</td>"
         f"<td class='num'>{bearing:.0f}°</td>"
-        f"<td class='num'>{nm:.2f}</td>"
+        f"<td class='num'>{dist / 1852:.2f}</td>"
         f"<td class='num'>{dist:.0f}</td></tr>"
     )
 
 
-def path_of(points):
-    return " ".join(f"{mx(p[3]):.1f},{my(p[2]):.1f}" for p in points)
+def inset(title, lon0, lat0, lon1, lat1, route, ferry, note, polygons):
+    """route: [(lat, lon), ...]. Local user unit is 1 m."""
 
+    def project(lon, lat):
+        return (lon - lon0) * M_PER_DEG_LON, (lat1 - lat) * M_PER_DEG_LAT
 
-def coast_paths():
-    parts = []
-    for el in COAST["elements"]:
-        if el.get("tags", {}).get("natural") != "coastline":
-            continue
-        geom = el.get("geometry") or []
-        if len(geom) < 2:
-            continue
-        d = [f"M{mx(geom[0]['lon']):.1f},{my(geom[0]['lat']):.1f}"]
-        for p in geom[1:]:
-            d.append(f"L{mx(p['lon']):.1f},{my(p['lat']):.1f}")
-        parts.append("".join(d))
-    return parts
-
-
-def land_polygon(side: str) -> str:
-    samples = []
-    lon = LON0
-    while lon <= LON1 + 1e-9:
-        hits = []
-        for el in COAST["elements"]:
-            if el.get("tags", {}).get("natural") != "coastline":
-                continue
-            geom = el.get("geometry") or []
-            for p, q in zip(geom, geom[1:]):
-                x1, y1, x2, y2 = p["lon"], p["lat"], q["lon"], q["lat"]
-                if x1 == x2:
-                    continue
-                if (x1 - lon) * (x2 - lon) <= 0:
-                    t = (lon - x1) / (x2 - x1)
-                    hits.append(y1 + t * (y2 - y1))
-        if hits:
-            samples.append((lon, max(hits) if side == "north" else min(hits)))
-        lon += 0.00035
-    if len(samples) < 2:
-        return ""
-    if side == "north":
-        pts = [(LON0, LAT1), *samples, (LON1, LAT1)]
-    else:
-        pts = [(LON0, LAT0), *samples, (LON1, LAT0)]
-    return " ".join(f"{mx(lon):.1f},{my(lat):.1f}" for lon, lat in pts)
-
-
-def grid():
-    lines = []
-    labels = []
-    lons = [133.18, 133.19, 133.20, 133.21, 133.22]
-    lats = [34.40, 34.41]
-    for lon in lons:
-        x = mx(lon)
-        lines.append(
-            f"<line x1='{x:.1f}' y1='0' x2='{x:.1f}' y2='{my(LAT0):.1f}' class='grid'/>"
+    width = (lon1 - lon0) * M_PER_DEG_LON
+    height = (lat1 - lat0) * M_PER_DEG_LAT
+    cell = 6.0
+    mask, nx, ny = raster_land(polygons, lon0, lat0, lon1, lat1, cell)
+    for lat, lon in route[1:]:
+        if is_land_at(lat, lon, mask, nx, ny, lon0, lat1, cell):
+            print(f"INSET POINT ON LAND {title} {lat:.5f},{lon:.5f}", file=sys.stderr)
+    land = land_path(mask, nx, ny, cell)
+    coast = coast_d(project)
+    x1, y1 = project(route[0][1], route[0][0])
+    x2, y2 = project(route[1][1], route[1][0])
+    ang = math.atan2(y2 - y1, x2 - x1)
+    head = 22
+    spread = 2.55
+    h1 = (x2 - head * math.cos(ang - spread), y2 - head * math.sin(ang - spread))
+    h2 = (x2 - head * math.cos(ang + spread), y2 - head * math.sin(ang + spread))
+    bearing, dist = rhumb(route[0][0], route[0][1], route[1][0], route[1][1])
+    ferry_svg = ""
+    if ferry:
+        (a, b, _name) = ferry
+        fx1, fy1 = project(a[1], a[0])
+        fx2, fy2 = project(b[1], b[0])
+        ferry_svg = (
+            f"<line x1='{fx1:.0f}' y1='{fy1:.0f}' x2='{fx2:.0f}' y2='{fy2:.0f}' class='iferry'/>"
+            f"<text x='{(fx1+fx2)/2 - 8:.0f}' y='{(fy1+fy2)/2 - 8:.0f}' class='itext' "
+            f"text-anchor='end'>渡船</text>"
         )
-        labels.append(
-            f"<text x='{x:.1f}' y='{my(LAT0) - 18:.1f}' class='gridlab' text-anchor='middle'>{fmt_lon(lon)}</text>"
-        )
-    for lat in lats:
-        y = my(lat)
-        lines.append(
-            f"<line x1='0' y1='{y:.1f}' x2='{mx(LON1):.1f}' y2='{y:.1f}' class='grid'/>"
-        )
-        labels.append(
-            f"<text x='28' y='{y - 8:.1f}' class='gridlab'>{fmt_lat(lat)}</text>"
-        )
-    return "\n".join(lines + labels)
+    scale = 200
+    return f"""<svg class="inset" viewBox="0 0 {width:.0f} {height:.0f}" xmlns="http://www.w3.org/2000/svg">
+      <rect width="{width:.0f}" height="{height:.0f}" fill="#d5e3ee"/>
+      <path d="{land}" class="land"/>
+      <path d="{coast}" class="icoast"/>
+      {ferry_svg}
+      <line x1="{x1:.0f}" y1="{y1:.0f}" x2="{x2:.0f}" y2="{y2:.0f}" class="iroute"/>
+      <polygon points="{x2:.0f},{y2:.0f} {h1[0]:.0f},{h1[1]:.0f} {h2[0]:.0f},{h2[1]:.0f}" class="iroute"/>
+      <circle cx="{x1:.0f}" cy="{y1:.0f}" r="16" class="ipier"/>
+      <circle cx="{x2:.0f}" cy="{y2:.0f}" r="11" class="iturn"/>
+      <text x="{x1 + 18:.0f}" y="{y1 - 10:.0f}" class="itext">①</text>
+      <text x="{x2 + 16:.0f}" y="{y2 + 28:.0f}" class="itext">② {bearing:.0f}° {dist:.0f}m</text>
+      <text x="8" y="28" class="ititle">{title}</text>
+      <text x="8" y="{height - 10:.0f}" class="itext">{note}</text>
+      <rect x="{width - scale - 16:.0f}" y="{height - 28:.0f}" width="{scale}" height="8" fill="#fbf8f2" stroke="#1c1915" stroke-width="1.5"/>
+      <rect x="{width - scale - 16:.0f}" y="{height - 28:.0f}" width="{scale / 2}" height="8" fill="#1c1915"/>
+      <text x="{width - 16:.0f}" y="{height - 32:.0f}" class="itext" text-anchor="end">200m</text>
+    </svg>"""
 
 
-def marker(lat, lon, label, dx, dy, anchor="start"):
-    x, y = mx(lon), my(lat)
-    return (
-        f"<g class='place'>"
-        f"<circle cx='{x:.1f}' cy='{y:.1f}' r='11'/>"
-        f"<text x='{x + dx:.1f}' y='{y + dy:.1f}' text-anchor='{anchor}'>{label}</text>"
-        f"</g>"
-    )
+def main():
+    cell = 22.0
+    polygons = land_polygons(LINES)
+    print(f"land polygons {len(polygons)}")
+    mask, nx, ny = raster_land(polygons, LON0, LAT0, LON1, LAT1, cell)
 
+    def wet(lat, lon):
+        return not is_land_at(lat, lon, mask, nx, ny, LON0, LAT1, cell)
 
-W_M = mx(LON1)
-H_M = my(LAT0)
-west_nm = WEST_M / 1852
-east_nm = EAST_M / 1852
-
-west_rows = "\n".join(leg_row(*row) for row in WEST_LEGS)
-east_rows = "\n".join(leg_row(*row) for row in EAST_LEGS)
-
-coast_svg = "\n".join(f"<path d='{d}' class='coast'/>" for d in coast_paths())
-
-# Ferry tracks
-ferries = [
-    (PIERS["土堂"], PIERS["兼吉"], "土堂―兼吉"),
-    (PIERS["駅前"], PIERS["富浜"], "駅前―富浜"),
-]
-ferry_svg = []
-for (a, b, name) in ferries:
-    x1, y1, x2, y2 = mx(a[1]), my(a[0]), mx(b[1]), my(b[0])
-    ferry_svg.append(
-        f"<line x1='{x1:.1f}' y1='{y1:.1f}' x2='{x2:.1f}' y2='{y2:.1f}' class='ferry'/>"
-    )
-
-# Bridge span at the published bridge longitude
-bridge_x = mx(133.2167)
-bridge_svg = (
-    f"<line x1='{bridge_x:.1f}' y1='{my(34.4112):.1f}' x2='{bridge_x:.1f}' y2='{my(34.4076):.1f}' class='bridge'/>"
-    f"<text x='{bridge_x - 16:.1f}' y='{my(34.41155):.1f}' class='bridgelab' text-anchor='end'>新尾道大橋 36m</text>"
-    f"<text x='{bridge_x + 16:.1f}' y='{my(34.41155):.1f}' class='bridgelab'>尾道大橋 34m</text>"
-)
-
-def arealabel(lat, lon, text, anchor="middle"):
-    return (
-        f"<text x='{mx(lon):.1f}' y='{my(lat):.1f}' text-anchor='{anchor}' "
-        f"class='place' style='font-size:56px;font-weight:700'>{text}</text>"
-    )
-
-places = "\n".join(
-    [
-        arealabel(34.4102, 133.2062, "尾道市街"),
-        arealabel(34.39505, 133.1992, "向島"),
-        marker(*PIERS["灯台"], "尾道灯台", 18, 78),
-        marker(*PIERS["中央桟橋"], "中央桟橋", 18, -36),
-        marker(*PIERS["新浜桟橋"], "新浜桟橋", 18, -36),
-        f"<text x='{mx(133.2036):.1f}' y='{my(34.40385):.1f}' class='ferrylab'>土堂―兼吉</text>",
-        f"<text x='{mx(133.1946):.1f}' y='{my(34.39955):.1f}' class='ferrylab'>駅前―富浜</text>",
+    print(f"view {fmt_lat(LAT0)}–{fmt_lat(LAT1)}  {fmt_lon(LON0)}–{fmt_lon(LON1)}")
+    print(f"chuo off {CHUO_OFF[0]:.5f},{CHUO_OFF[1]:.5f} water={wet(*CHUO_OFF)}")
+    print(f"niihama off {NIIHAMA_OFF[0]:.5f},{NIIHAMA_OFF[1]:.5f} water={wet(*NIIHAMA_OFF)}")
+    checks = [
+        ("bridge channel", 34.4090, 133.2170, True),
+        ("tosaki", 34.4000, 133.2450, True),
+        ("miyuki", 34.3820, 133.1720, True),
+        ("mekari", 34.3520, 133.1780, True),
+        ("hills", 34.4400, 133.2000, False),
+        ("mukaijima", 34.3950, 133.2000, False),
+        ("innoshima", 34.3400, 133.1700, False),
+        ("momoshima", 34.3720, 133.2700, False),
+        ("lighthouse point", LIGHT_LAT, LIGHT_LON, False),
     ]
-)
+    failed = False
+    for name, lat, lon, expect in checks:
+        got = wet(lat, lon)
+        flag = "OK" if got == expect else "FAIL"
+        if got != expect:
+            failed = True
+        print(f"  {flag} {name} water={got}")
+    if not wet(*CHUO_OFF) or not wet(*NIIHAMA_OFF):
+        failed = True
+    # ASCII so label placement can be checked in the log.
+    print("    " + "".join(f"{v:5.2f}"[-4:] for v in [133.08 + i * 0.02 for i in range(13)]))
+    for lat in [34.48, 34.46, 34.44, 34.42, 34.40, 34.38, 34.36, 34.34, 34.32]:
+        row = []
+        for i in range(26):
+            lon = 133.08 + i * 0.01
+            row.append("~" if wet(lat, lon) else "#")
+        print(f"{lat:.2f} {''.join(row)}")
+    if failed:
+        sys.exit(1)
 
-# Numbered turning points
-nums = []
-for ident, _name, lat, lon in WEST:
-    nums.append(
-        f"<g class='wp w'>"
-        f"<circle cx='{mx(lon):.1f}' cy='{my(lat):.1f}' r='32'/>"
-        f"<text x='{mx(lon):.1f}' y='{my(lat) + 6:.1f}' text-anchor='middle'>{ident}</text>"
-        f"</g>"
+    w_m = mx(LON1)
+    h_m = my(LAT0)
+    land = land_path(mask, nx, ny, cell)
+    coast = coast_d(lambda lon, lat: (mx(lon), my(lat)))
+    bridges = bridge_d(lambda lon, lat: (mx(lon), my(lat)))
+    bridge_svg = "\n".join(f"<path d='{d}' class='bridge'/>" for d in bridges)
+
+    def grid():
+        lines = []
+        labels = []
+        for lon in (133.10, 133.15, 133.20, 133.25, 133.30):
+            x = mx(lon)
+            lines.append(
+                f"<line x1='{x:.0f}' y1='0' x2='{x:.0f}' y2='{h_m:.0f}' class='grid'/>"
+            )
+            labels.append(
+                f"<text x='{x:.0f}' y='{h_m - 80:.0f}' class='gridlab' text-anchor='middle'>{fmt_lon(lon)}</text>"
+            )
+        for lat in (34.35, 34.40, 34.45):
+            y = my(lat)
+            lines.append(
+                f"<line x1='0' y1='{y:.0f}' x2='{w_m:.0f}' y2='{y:.0f}' class='grid'/>"
+            )
+            labels.append(
+                f"<text x='90' y='{y - 40:.0f}' class='gridlab'>{fmt_lat(lat)}</text>"
+            )
+        return "\n".join(lines + labels)
+
+    def label(lat, lon, text, dx=0, dy=0, anchor="middle", css="place"):
+        return (
+            f"<text x='{mx(lon) + dx:.0f}' y='{my(lat) + dy:.0f}' text-anchor='{anchor}' "
+            f"class='{css}'>{text}</text>"
+        )
+
+    def pier_mark(lat, lon, text, dy):
+        x, y = mx(lon), my(lat)
+        return (
+            f"<circle cx='{x:.0f}' cy='{y:.0f}' r='110' class='pier'/>"
+            + label(lat, lon, text, dy=dy, css="pierlab")
+        )
+
+    cx, cy = mx(LIGHT_LON), my(LIGHT_LAT)
+    ferry_svg = []
+    for a, b, name in FERRIES:
+        x1, y1, x2, y2 = mx(a[1]), my(a[0]), mx(b[1]), my(b[0])
+        ferry_svg.append(
+            f"<line x1='{x1:.0f}' y1='{y1:.0f}' x2='{x2:.0f}' y2='{y2:.0f}' class='ferry'/>"
+        )
+
+    b_chuo, d_chuo, row_chuo = leg_row(
+        "① 中央桟橋", *CHUO, "② 桟橋前面", *CHUO_OFF
     )
-for ident, _name, lat, lon in EAST[1:-1]:
-    nums.append(
-        f"<g class='wp e'>"
-        f"<circle cx='{mx(lon):.1f}' cy='{my(lat):.1f}' r='32'/>"
-        f"<text x='{mx(lon):.1f}' y='{my(lat) + 6:.1f}' text-anchor='middle'>{ident}</text>"
-        f"</g>"
+    b_nii, d_nii, row_nii = leg_row(
+        "① 新浜桟橋", *NIIHAMA, "② 桟橋前面", *NIIHAMA_OFF
+    )
+    print(f"chuo leg {b_chuo:.1f}° {d_chuo:.0f}m")
+    print(f"niihama leg {b_nii:.1f}° {d_nii:.0f}m")
+
+    # Insets are wider than tall (the side-by-side boxes are about 3:2).
+    def window(center_lat, center_lon, height_m, south_bias=0.55):
+        width_m = height_m * 1.55
+        lat1 = center_lat + (1 - south_bias) * height_m / M_PER_DEG_LAT
+        lat0 = lat1 - height_m / M_PER_DEG_LAT
+        lon0 = center_lon - width_m / 2 / M_PER_DEG_LON
+        lon1 = center_lon + width_m / 2 / M_PER_DEG_LON
+        return lon0, lat0, lon1, lat1
+
+    nii_box = window(34.3979, 133.17745, 560)
+    chuo_box = window(34.4066, 133.2022, 560)
+    inset_nii = inset(
+        "新浜桟橋　離着のみ",
+        *nii_box,
+        [NIIHAMA, NIIHAMA_OFF],
+        None,
+        "矢印は離着だけ。先の針路は仕向地による",
+        polygons,
+    )
+    inset_chuo = inset(
+        "中央桟橋　離着のみ",
+        *chuo_box,
+        [CHUO, CHUO_OFF],
+        FERRIES[0],
+        "矢印は離着だけ。直前を渡船が横断する",
+        polygons,
     )
 
-html = f"""<!DOCTYPE html>
+    scale = 5000
+    html = f"""<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="utf-8"/>
-<title>運航基準図　尾道港周辺（尾道水道）</title>
+<title>運航基準図　尾道港から約10km</title>
 <style>
   @page {{ size: A3 landscape; margin: 0; }}
   * {{ box-sizing: border-box; }}
-  html, body {{ margin: 0; padding: 0; background: #cfc8bc; }}
+  html, body {{ margin: 0; padding: 0; background: #fff; }}
   body {{
     font-family: "Yu Gothic", "Hiragino Sans", "Noto Sans CJK JP", "WenQuanYi Micro Hei", sans-serif;
     color: #1c1915;
@@ -261,115 +425,129 @@ html = f"""<!DOCTYPE html>
   .sheet {{
     width: 420mm;
     height: 297mm;
-    margin: 0 auto;
-    background: #fbf8f2;
-    padding: 6mm 7mm 5mm;
+    padding: 5mm 6mm 4.5mm;
     display: flex;
     flex-direction: column;
-    gap: 2.2mm;
+    gap: 1.8mm;
+    overflow: hidden;
   }}
   header {{
     display: grid;
     grid-template-columns: 1fr auto;
     gap: 4mm;
-    border-bottom: 0.6mm solid #1c1915;
-    padding-bottom: 1.6mm;
+    border-bottom: 0.55mm solid #1c1915;
+    padding-bottom: 1.3mm;
   }}
   h1 {{
-    font-size: 16pt;
-    line-height: 1.15;
+    font-size: 15.5pt;
+    line-height: 1.12;
     margin: 0;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.06em;
     font-weight: 700;
   }}
-  h1 span {{ display: block; font-size: 10.5pt; letter-spacing: 0.04em; font-weight: 600; margin-top: 0.6mm; }}
-  .meta {{
-    font-size: 8pt;
-    line-height: 1.35;
-    text-align: right;
-  }}
+  h1 span {{ display: block; font-size: 10pt; letter-spacing: 0.03em; font-weight: 600; margin-top: 0.5mm; }}
+  .meta {{ font-size: 8pt; line-height: 1.35; text-align: right; }}
   .meta b {{ font-weight: 700; }}
-  .blanks {{ margin-top: 0.8mm; }}
-  .mapwrap {{
+  .blanks {{ margin-top: 0.6mm; }}
+  .main {{
     flex: 1 1 auto;
     min-height: 0;
+    display: flex;
+    gap: 2.4mm;
+  }}
+  .mapwrap {{
+    flex: 1 1 auto;
+    min-width: 0;
     border: 0.35mm solid #1c1915;
     background: #d5e3ee;
     position: relative;
   }}
   svg.map {{ width: 100%; height: 100%; display: block; }}
-  .coast {{ fill: none; stroke: #243038; stroke-width: 8; stroke-linejoin: round; }}
-  .land {{ fill: #efe6d6; stroke: none; }}
-  .grid {{ stroke: rgba(28,25,21,0.28); stroke-width: 1.5; }}
-  .gridlab {{ font-size: 42px; fill: #3d4650; }}
-  .route {{ fill: none; stroke-linecap: round; stroke-linejoin: round; }}
-  .route.w {{ stroke: #14365c; stroke-width: 14; }}
-  .route.e {{ stroke: #1d5c45; stroke-width: 12; stroke-dasharray: 28 16; }}
-  .ferry {{ stroke: #b85a12; stroke-width: 7; stroke-dasharray: 18 12; }}
-  .ferrylab, .bridgelab, .note {{ font-size: 46px; fill: #1c1915; stroke: #fbf8f2; stroke-width: 8; paint-order: stroke fill; }}
-  .ferrylab {{ fill: #8a3e08; }}
-  .bridge {{ stroke: #1c1915; stroke-width: 10; }}
-  .bridgelab {{ font-size: 42px; }}
-  .place circle {{ fill: #1c1915; }}
-  .place text {{ font-size: 52px; font-weight: 700; fill: #1c1915; stroke: #fbf8f2; stroke-width: 10; paint-order: stroke fill; }}
-  .wp circle {{ stroke: #fbf8f2; stroke-width: 4; }}
-  .wp text {{ font-size: 36px; font-weight: 700; fill: #fbf8f2; }}
-  .wp.w circle {{ fill: #14365c; }}
-  .wp.e circle {{ fill: #1d5c45; }}
-  .mapkey {{
+  .land {{ fill: #efe6d6; }}
+  .coast {{ fill: none; stroke: #243038; stroke-width: 55; stroke-linejoin: round; stroke-linecap: round; }}
+  .grid {{ stroke: rgba(28,25,21,0.22); stroke-width: 12; }}
+  .gridlab {{ font-size: 250px; fill: #3d4650; }}
+  .ring {{ fill: none; stroke: #14365c; stroke-width: 28; stroke-dasharray: 180 120; }}
+  .ferry {{ stroke: #b85a12; stroke-width: 80; stroke-dasharray: 90 70; }}
+  .bridge {{ fill: none; stroke: #1c1915; stroke-width: 46; stroke-linecap: round; }}
+  .pier {{ fill: #14365c; stroke: #fbf8f2; stroke-width: 16; }}
+  .pierlab, .place, .note {{
+    font-size: 340px;
+    font-weight: 700;
+    fill: #1c1915;
+    stroke: #fbf8f2;
+    stroke-width: 70;
+    paint-order: stroke fill;
+  }}
+  .note {{ font-size: 280px; font-weight: 600; }}
+  .caution {{ font-size: 300px; font-weight: 700; fill: #7a2e0b; stroke: #fbf8f2; stroke-width: 70; paint-order: stroke fill; }}
+  .light {{ fill: #1c1915; stroke: #fbf8f2; stroke-width: 12; }}
+  .banner {{
     position: absolute;
-    left: 2.5mm;
-    bottom: 2.2mm;
+    left: 0; right: 0; top: 0;
     background: rgba(251,248,242,0.94);
-    border: 0.25mm solid #1c1915;
-    padding: 1.2mm 1.8mm;
-    font-size: 7.4pt;
-    line-height: 1.35;
+    border-bottom: 0.25mm solid #1c1915;
+    font-size: 7.6pt;
+    line-height: 1.3;
+    padding: 0.7mm 2mm;
   }}
-  .mapkey div {{ display: flex; align-items: center; gap: 1.6mm; }}
-  .swatch {{ width: 9mm; height: 0; border-top: 1.1mm solid #14365c; }}
-  .swatch.e {{ border-top: 1.1mm dashed #1d5c45; }}
-  .swatch.f {{ border-top: 0.9mm dashed #b85a12; }}
-  .scale {{ margin-top: 0.8mm; }}
-  .scale i {{
-    display: inline-block; width: 18mm; height: 2mm;
-    background: repeating-linear-gradient(90deg, #1c1915 0 9mm, #fbf8f2 9mm 18mm);
-    border: 0.2mm solid #1c1915; vertical-align: -0.4mm; margin-right: 1.2mm;
-  }}
-  .cols {{
-    display: grid;
-    grid-template-columns: 1.15fr 1fr 1fr;
-    gap: 2.4mm;
-    height: 114mm;
+  .side {{
+    width: 158mm;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1.8mm;
   }}
   section {{
     border: 0.3mm solid #1c1915;
-    padding: 1.5mm 1.8mm 1.3mm;
+    padding: 1.3mm 1.6mm 1.1mm;
+    min-height: 0;
     overflow: hidden;
   }}
-  h2 {{
-    font-size: 9pt;
-    margin: 0 0 1mm;
-    letter-spacing: 0.04em;
-  }}
-  p, li {{ font-size: 7.15pt; line-height: 1.32; margin: 0 0 0.7mm; }}
-  ul {{ margin: 0; padding-left: 3.4mm; }}
-  table {{ width: 100%; border-collapse: collapse; margin: 0.6mm 0 1mm; }}
+  section.route {{ flex: 1.35 1 0; }}
+  section.caution {{ flex: 1.05 1 0; }}
+  section.other {{ flex: 1 1 0; }}
+  h2 {{ font-size: 9pt; margin: 0 0 0.7mm; letter-spacing: 0.03em; }}
+  p, li {{ font-size: 7.05pt; line-height: 1.28; margin: 0 0 0.55mm; }}
+  ul {{ margin: 0; padding-left: 3.2mm; }}
+  table {{ width: 100%; border-collapse: collapse; margin: 0.4mm 0 0.7mm; }}
   th, td {{
-    border: 0.2mm solid #1c1915;
-    font-size: 6.7pt;
-    padding: 0.3mm 0.6mm;
+    border: 0.18mm solid #1c1915;
+    font-size: 6.6pt;
+    padding: 0.25mm 0.55mm;
     text-align: left;
     vertical-align: top;
   }}
   th {{ background: #efe6d6; font-weight: 700; }}
   td.num {{ text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }}
-  .sub {{ font-weight: 700; font-size: 7.3pt; margin: 0.8mm 0 0.2mm; }}
+  .sub {{ font-weight: 700; font-size: 7.2pt; margin: 0.5mm 0 0.15mm; }}
+  .insets {{
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.4mm;
+    height: 46mm;
+    margin: 0.4mm 0 0.6mm;
+  }}
+  svg.inset {{ width: 100%; height: 100%; border: 0.2mm solid #1c1915; display: block; }}
+  .icoast {{ fill: none; stroke: #243038; stroke-width: 5; stroke-linejoin: round; }}
+  .iroute {{ stroke: #14365c; stroke-width: 6; fill: #14365c; }}
+  .iferry {{ stroke: #b85a12; stroke-width: 4; stroke-dasharray: 10 7; }}
+  .ipier {{ fill: #14365c; stroke: #fbf8f2; stroke-width: 2; }}
+  .iturn {{ fill: #fbf8f2; stroke: #14365c; stroke-width: 2.5; }}
+  .itext, .ititle {{
+    font-size: 22px;
+    fill: #1c1915;
+    stroke: #fbf8f2;
+    stroke-width: 4;
+    paint-order: stroke fill;
+    font-weight: 700;
+  }}
+  .ititle {{ font-size: 24px; }}
   footer {{
-    font-size: 6.5pt;
-    line-height: 1.3;
+    font-size: 6.35pt;
+    line-height: 1.28;
     border-top: 0.35mm solid #1c1915;
-    padding-top: 1mm;
+    padding-top: 0.8mm;
   }}
 </style>
 </head>
@@ -377,101 +555,118 @@ html = f"""<!DOCTYPE html>
 <article class="sheet">
   <header>
     <div>
-      <h1>運航基準図<span>尾道港周辺（尾道水道）　小型船舶による海上タクシー</span></h1>
+      <h1>運航基準図<span>尾道港から約10km　小型船舶による海上タクシー</span></h1>
     </div>
     <div class="meta">
-      <div>常用発着場　<b>尾道中央桟橋</b>・<b>新浜桟橋</b></div>
-      <div>海図 W119・W114・W1117　世界測地系　令和8年11月13日</div>
+      <div>発着場は独立　<b>尾道中央桟橋</b>・<b>新浜桟橋</b></div>
+      <div>海図 W119・W114・W1117・W1118　世界測地系　令和8年11月13日</div>
       <div class="blanks">事業者名＿＿＿＿＿＿　船舶名＿＿＿＿＿＿　航海速力＿＿kn</div>
     </div>
   </header>
-  <div class="mapwrap">
-    <svg class="map" viewBox="0 0 {W_M:.1f} {H_M:.1f}" xmlns="http://www.w3.org/2000/svg">
-      <polygon points="{land_polygon('north')}" class="land"/>
-      <polygon points="{land_polygon('south')}" class="land"/>
-      {grid()}
-      {coast_svg}
-      {''.join(ferry_svg)}
-      {bridge_svg}
-      <polyline points="{path_of(WEST)}" class="route w"/>
-      <polyline points="{path_of(EAST)}" class="route e"/>
-      {''.join(nums)}
-      {places}
-      <text x="{mx(133.199):.1f}" y="{my(34.4087):.1f}" class="note">西航は実線（北側）　東航は破線（南側）</text>
-      <text x="{mx(133.1926):.1f}" y="{my(34.4057):.1f}" class="note">灯台突出部は狭くなる</text>
-      <text x="{mx(133.2142):.1f}" y="{my(34.4067):.1f}" class="note">東口は図の東外</text>
-      <g class="scalebar">
-        <rect x="{W_M - 620:.1f}" y="{H_M - 90:.1f}" width="500" height="18" fill="#fbf8f2" stroke="#1c1915" stroke-width="3"/>
-        <rect x="{W_M - 620:.1f}" y="{H_M - 90:.1f}" width="250" height="18" fill="#1c1915"/>
-        <text x="{W_M - 620:.1f}" y="{H_M - 108:.1f}" class="gridlab">0</text>
-        <text x="{W_M - 370:.1f}" y="{H_M - 108:.1f}" class="gridlab" text-anchor="middle">250m</text>
-        <text x="{W_M - 120:.1f}" y="{H_M - 108:.1f}" class="gridlab" text-anchor="end">500m</text>
-      </g>
-    </svg>
-    <div class="mapkey">
-      <div><i class="swatch"></i>西航　中央桟橋→新浜桟橋（北岸寄り）</div>
-      <div><i class="swatch e"></i>東航　新浜桟橋→中央桟橋（向島寄り）</div>
-      <div><i class="swatch f"></i>渡船の横断　2航路</div>
-      <div>北は上。左下の白黒棒は500m。</div>
+  <div class="main">
+    <div class="mapwrap">
+      <svg class="map" viewBox="0 0 {w_m:.0f} {h_m:.0f}" xmlns="http://www.w3.org/2000/svg">
+        <path d="{land}" class="land"/>
+        {grid()}
+        <circle cx="{cx:.0f}" cy="{cy:.0f}" r="10000" class="ring"/>
+        <path d="{coast}" class="coast"/>
+        {bridge_svg}
+        {''.join(ferry_svg)}
+        <circle cx="{cx:.0f}" cy="{cy:.0f}" r="55" class="light"/>
+        {pier_mark(*CHUO, "中央桟橋", -160)}
+        {pier_mark(*NIIHAMA, "新浜桟橋", -160)}
+        {label(LIGHT_LAT, LIGHT_LON, "尾道灯台", dx=80, dy=280, anchor="start")}
+        {label(34.4185, 133.1980, "尾道")}
+        {label(34.3860, 133.2100, "向島")}
+        {label(34.3480, 133.1680, "因島")}
+        {label(34.3822, 133.1580, "岩子島")}
+        {label(34.3735, 133.2720, "百島")}
+        {label(34.4048, 133.1865, "尾道水道", css="note")}
+        {label(34.3845, 133.1665, "御幸瀬戸", css="note")}
+        {label(34.3500, 133.1830, "布刈瀬戸", css="note")}
+        {label(34.3680, 133.1150, "三原瀬戸", css="note")}
+        {label(34.3683, 133.2067, "高見山", css="note")}
+        {label(34.3450, 133.2767, "横島", css="note")}
+        {label(34.4145, 133.2260, "尾道大橋 高さ34m", css="caution", anchor="start")}
+        {label(34.4145, 133.2260, "新尾道大橋 高さ36m", dy=340, css="caution", anchor="start")}
+        {label(34.3595, 133.1680, "因島大橋 航路限界50m", css="caution", anchor="end")}
+        {label(34.3728, 133.1765, "向島大橋 約13m", css="caution", anchor="start")}
+        {label(34.3933, 133.1555, "架空線 高さ51m", css="caution", anchor="start")}
+        {label(34.4008, 133.2485, "戸崎瀬戸・渡船", css="caution", anchor="start")}
+        {label(34.3088, 133.1485, "生口橋 航路限界26m（圏外）", css="caution", anchor="end")}
+        {label(34.3520, 133.2550, "定置網・のり養殖に注意", css="caution")}
+        {label(LIGHT_LAT, LIGHT_LON + 10000 / M_PER_DEG_LON, "10km", dx=120, dy=80, anchor="start", css="note")}
+        {label(LIGHT_LAT - 10000 / M_PER_DEG_LAT, LIGHT_LON, "10km", dx=280, dy=-220, anchor="start", css="note")}
+        <g>
+          <rect x="{w_m - scale - 700:.0f}" y="{h_m - 520:.0f}" width="{scale}" height="90" fill="#fbf8f2" stroke="#1c1915" stroke-width="16"/>
+          <rect x="{w_m - scale - 700:.0f}" y="{h_m - 520:.0f}" width="{scale / 2:.0f}" height="90" fill="#1c1915"/>
+          <text x="{w_m - scale - 700:.0f}" y="{h_m - 580:.0f}" class="gridlab">0</text>
+          <text x="{w_m - scale / 2 - 700:.0f}" y="{h_m - 580:.0f}" class="gridlab" text-anchor="middle">2.5km</text>
+          <text x="{w_m - 700:.0f}" y="{h_m - 580:.0f}" class="gridlab" text-anchor="end">5km</text>
+        </g>
+      </svg>
+      <div class="banner">黒点は発着場。円は尾道灯台から10km。橙の破線は渡船。橋の位置に黒線。北が上。離着の針路は右の差し込み図で、二つの桟橋は結ばない。</div>
+    </div>
+    <div class="side">
+      <section class="route">
+        <h2>（1）基準経路　発着場の位置、針路、変針点</h2>
+        <p>中央桟橋と新浜桟橋は、それぞれ独立した発着場である。桟橋の間に基準経路は定めない。各桟橋から②桟橋前面までが離着の針路で、②の先は仕向地による。航路を航行する船舶と、渡船の進路を避ける。</p>
+        <div class="insets">
+          {inset_nii}
+          {inset_chuo}
+        </div>
+        <p class="sub">新浜桟橋　{fmt_lat(NIIHAMA[0])} {fmt_lon(NIIHAMA[1])}</p>
+        <table>
+          <tr><th>自</th><th>至</th><th>針路</th><th>海里</th><th>m</th></tr>
+          {row_nii}
+        </table>
+        <p class="sub">中央桟橋　{fmt_lat(CHUO[0])} {fmt_lon(CHUO[1])}　土堂二丁目、海の駅</p>
+        <table>
+          <tr><th>自</th><th>至</th><th>針路</th><th>海里</th><th>m</th></tr>
+          {row_chuo}
+        </table>
+        <p>針路は真方位で、1度単位。距離は無流の概算で、潮流の偏位を含まない。航海速力は船舶の速力基準による。中央桟橋の②の南を、土堂―兼吉の渡船が横断する。</p>
+      </section>
+      <section class="caution">
+        <h2>（2）地形・水深・潮流で特に留意する箇所</h2>
+        <p class="sub">尾道水道の潮流</p>
+        <p>東流の最強は2.7ノット、西流の最強は2.5ノット。東流は尾道の低潮の約40分後から高潮の約40分後までで、最強は高潮の約2時間25分前。西流は高潮の約40分後から低潮の約40分後までで、最強は低潮の約2時間25分前。転流は来島海峡より約15分遅れる。当日の推算で確認する。流れは岸にほぼ並行するので、離着桟は当て舵と増減速の余裕を持つ。</p>
+        <p class="sub">水深と狭い水面</p>
+        <p>水道の西口は約9m。東口の最狭部は幅約50m、水深約4mの箇所がある。尾道灯台が水道へ突出する。第二航路は中心線の両側各25mで、東口最狭部ではこの幅が可航幅になる。法線は海図W119に従う。本図に等深線はない。</p>
+        <p class="sub">橋、架空線、渡船、漁具</p>
+        <p>尾道大橋は高さ34m、新尾道大橋は高さ36m。御幸瀬戸の向島大橋は高さ約13m、南口の架空線は高さ28m。水道西部（34°23.6′N 133°09.7′E）の架空線は高さ51m。高さは潮が上がると余裕が減る。因島大橋の航路限界は50mで、布刈瀬戸（幅約800m）は三原瀬戸航路の東口にあたり、大型船が多く潮流が強い。流速は推算で確認する。生口橋の航路限界26mは灯台から約11km、内海大橋の高さ30mは約12kmで、いずれも10km圏の外。</p>
+        <p>水道の渡船は土堂―兼吉と駅前―富浜の2航路。福本渡船は令和7年3月31日に廃止。戸崎瀬戸にも横断するフェリーと渡船がある。横島・百島方面には定置網とのり養殖があり、水路誌は距岸約3海里に及ぶものがある、と記す。</p>
+      </section>
+      <section class="other">
+        <h2>（3）航行の安全を確保するため必要な事項</h2>
+        <ul>
+          <li>総トン数20トン未満は港則法の汽艇等であり、航路を航行する義務はない。汽艇等以外の船舶の進路を避ける。</li>
+          <li>20トン以上の船舶は、特定港への出入と通過に航路を用いる。やむを得ない場合を除く。</li>
+          <li>航路への出入と横断は、航路を航行する船舶の進路を避ける。航路内は右側を通り、並航も追越しもせず、錨泊しない。</li>
+          <li>港内は、他船に危険を及ぼさない速力とする。渡船の横断帯と離着桟は微速とする。</li>
+          <li>第三区では、岸壁又は桟橋に係留中の船舶の船側に係留しない。区界は海図W119で確認する。</li>
+          <li>旅客船、漁船、作業船、プレジャーボートがふくそうする。大型船の通航を妨げない。</li>
+          <li>視程が低下したときは減速し、見張りを増やす。安全な速力を保てなければ反転又は待機する。</li>
+          <li>離桟時と着桟時に、地点名、時刻、天候、風向、風速、波浪、視程を運航管理者へ連絡する。</li>
+          <li>中央桟橋は、尾道みなと祭と住吉花火大会の日は休業する。</li>
+          <li>緊急通報は118。尾道海上保安部（港長）0848-22-2108、尾道市古浜町。</li>
+          <li>発航前に海図、潮汐表、水路通報、当日の潮流推算を確認する。</li>
+        </ul>
+      </section>
     </div>
   </div>
-  <div class="cols">
-    <section>
-      <h2>（1）基準経路　発着場・針路・変針点</h2>
-      <p>常用経路は中央桟橋と新浜桟橋の間。西航は可航水域の北側、東航は南側を通る。尾道灯台の突出部では東航も灯台を右舷に見て、北側の可航水域に寄る。桟橋を離れた直後と着桟の直前だけ航路を横断する。</p>
-      <p class="sub">西航　中央桟橋 → 新浜桟橋　{west_nm:.2f}海里</p>
-      <table>
-        <tr><th>自</th><th>至</th><th>針路</th><th>海里</th><th>m</th></tr>
-        {west_rows}
-      </table>
-      <p class="sub">東航　新浜桟橋 → 中央桟橋　{east_nm:.2f}海里</p>
-      <table>
-        <tr><th>自</th><th>至</th><th>針路</th><th>海里</th><th>m</th></tr>
-        {east_rows}
-      </table>
-      <p>針路は真方位で、表は1度単位。距離は無流の概算で、潮流による偏位を含まない。無流・8ノットで西航約{west_nm / 8 * 60:.0f}分、東航約{east_nm / 8 * 60:.0f}分。6ノットで約{west_nm / 6 * 60:.0f}分、約{east_nm / 6 * 60:.0f}分。航海速力は船舶の速力基準による。</p>
-      <p>中央桟橋（海の駅の公表位置）{fmt_lat(34.407550)} {fmt_lon(133.202417)}。新浜桟橋 {fmt_lat(34.398801)} {fmt_lon(133.177452)}。桟橋間の直線は{2488 / 1852:.2f}海里・真方位247°／067°だが、直線は灯台の突出に寄るため使わない。</p>
-    </section>
-    <section>
-      <h2>（2）地形・水深・潮流で特に留意する箇所</h2>
-      <p class="sub">潮流（水道の全域）</p>
-      <p>東流の最強2.7ノット、西流の最強2.5ノット。東流は尾道の低潮の約40分後から高潮の約40分後で、最強は高潮の約2時間25分前。西流は高潮の約40分後から低潮の約40分後で、最強は低潮の約2時間25分前。転流は来島海峡より約15分遅れる。当日の推算は尾道海上保安部の発表で確認する。流れは岸にほぼ並行するので、離着桟は当て舵と増減速の余裕を持つ。</p>
-      <p class="sub">水深と地形</p>
-      <p>西口は約9m。東口の最狭部（戸崎瀬戸方面、本図の東外）は幅約50m、水深約4mの箇所がある。常用経路はこの最狭部を通らない。尾道灯台（小歌島）が水道へ突出する。東航は⑨で灯台を右舷に見て北側の可航水域へ寄る。両岸に係留船が続く。桟橋前面の水深は海図による。本図に等深線はない。</p>
-      <p class="sub">渡船・橋梁・架空線</p>
-      <p>土堂―兼吉、駅前―富浜の渡船が頻繁に水道を横断する。横断帯では減速し、渡船の進路を避ける。福本渡船は令和7年3月31日に廃止。東側へ出るときは尾道大橋（高さ34m）と新尾道大橋（高さ36m）。南西の御幸瀬戸は向島大橋（高さ約13m）と架空線（高さ28m）。水道西部（34°23.6′N 133°09.7′E付近）に架空線（高さ51m）。高さは水路誌の記載で、潮が上がると余裕は減る。</p>
-    </section>
-    <section>
-      <h2>（3）航行の安全を確保するため必要な事項</h2>
-      <ul>
-        <li>総トン数20トン未満は港則法の汽艇等であり、航路を航行する義務はない。汽艇等以外の船舶の進路を避ける。</li>
-        <li>20トン以上の船舶は、特定港への出入と通過に航路を用いる。やむを得ない場合を除く。</li>
-        <li>航路への出入と横断は、航路を航行する船舶の進路を避ける。航路内は右側を通り、並航も追越しもせず、錨泊しない。</li>
-        <li>第二航路は中心線の両側各25m。東口最狭部では、この幅が可航幅になる。法線は海図に従う。</li>
-        <li>港内は、他船に危険を及ぼさない速力とする。渡船の横断帯と離着桟は微速とする。</li>
-        <li>第三区では、岸壁又は桟橋に係留中の船舶の船側に係留しない。</li>
-        <li>旅客船、漁船、作業船、プレジャーボート、造船所の船舶がふくそうする。航路中央の大型船を妨げない。</li>
-        <li>視程が低下したときは減速し、見張りを増やす。安全な速力を保てなければ反転又は待機する。</li>
-        <li>通過連絡は、①と②の間の土堂渡船横断と、③駅前渡船沖。地点名、時刻、天候、風向、風速、波浪、視程を運航管理者へ連絡する。</li>
-        <li>中央ビジター桟橋は、尾道みなと祭と住吉花火大会の日は休業する。</li>
-        <li>緊急通報は118。尾道海上保安部（港長）は0848-22-2108、尾道市古浜町。</li>
-        <li>発航前に海図、潮汐表、水路通報、当日の潮流推算を確認し、基準経路と避険線を海図へ記入する。</li>
-      </ul>
-    </section>
-  </div>
   <footer>
-    出典：海上保安庁『瀬戸内海水路誌』追補（書誌103、令和8年1月30日）尾道水道。港則法第3条・第11条・第12条・第13条・第16条・第18条。港則法施行規則第34条・別表第二（第二航路）。中央桟橋の位置はおのみち海の駅の公表値。新浜桟橋・渡船場の位置はOpenStreetMap（令和8年11月）。岸線は同海岸線を模式化。
-    本図は運航基準を示す模式図であり、航海用海図ではない。針路と距離は世界測地系の概算である。航海には最新の海図W119、潮汐表、水路通報と、船長の判断を用いる。印刷はA3横、倍率100%、余白なし。
+    出典：海上保安庁『瀬戸内海水路誌』追補（書誌103、令和8年1月30日）の尾道水道、阿伏兎瀬戸～戸崎瀬戸。港則法第3条・第11条・第12条・第13条・第16条・第18条。港則法施行規則第34条・別表第二。因島大橋・生口橋の航路限界は各橋の諸元。中央桟橋の位置はおのみち海の駅の公表値。新浜桟橋、渡船場、岸線はOpenStreetMap（令和8年11月）を模式化。
+    本図は運航基準の模式図であり、航海用海図ではない。半径10kmの中心は尾道灯台。針路と距離は世界測地系の概算。航海には最新の海図W119、W114、W1117、W1118、潮汐表、水路通報と、船長の判断を用いる。印刷はA3横、倍率100%、余白なし。
   </footer>
 </article>
 </body>
 </html>
 """
+    out = ROOT / "onomichi-unko-kijunzu.html"
+    out.write_text(html, encoding="utf-8")
+    print(f"wrote {out} bytes={out.stat().st_size}")
 
-out = ROOT / "onomichi-unko-kijunzu.html"
-out.write_text(html, encoding="utf-8")
-print(f"wrote {out}")
-print(f"west {west_nm:.3f} NM  east {east_nm:.3f} NM")
-for label, rows in (("W", WEST_LEGS), ("E", EAST_LEGS)):
-    for a, b, brg, dist in rows:
-        print(f"  {label} {a[0]}->{b[0]} {brg:.1f}° {dist:.0f}m")
+
+if __name__ == "__main__":
+    main()
