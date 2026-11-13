@@ -14,9 +14,12 @@ ROOT = Path(__file__).resolve().parent
 COAST = json.loads((ROOT / "coast.json").read_text())
 LINES = COAST["lines"]  # [lon, lat]
 BRIDGES = COAST["bridges"]
-# 2 m contour from Web海図 by HONDEX (等深線NN, depth "2"). Shoreward of the
-# line is 2 m or less. It is a fishfinder chart, not chart W119.
-DEPTH_LINES = json.loads((ROOT / "depth2.json").read_text())["lines"]
+# Web海図 by HONDEX, registered to the same WGS84 coast. The red line is the
+# depth=2 contour (drawn #FF0000 on that chart). The green line is the dark
+# green drying line (干潟). Shoreward of either is shallow. Not chart W119.
+_HONDEX = json.loads((ROOT / "depth2.json").read_text())
+RED_LINES = _HONDEX["red"]
+GREEN_LINES = _HONDEX["green"]
 
 # Wide band of the channel and the sets to the south of it. North sits just
 # inland of the Honshu shore. The window is sized to the map panel so the
@@ -215,10 +218,10 @@ def coast_d(project):
     return "".join(parts)
 
 
-def contour_d(project, lon0, lat0, lon1, lat1):
-    """2 m contour clipped to lines that meet the window."""
+def contour_d(lines, project, lon0, lat0, lon1, lat1):
+    """Lines that meet the window."""
     parts = []
-    for line in DEPTH_LINES:
+    for line in lines:
         if not any(lon0 <= lon <= lon1 and lat0 <= lat <= lat1 for lon, lat in line):
             continue
         x, y = project(line[0][0], line[0][1])
@@ -274,7 +277,8 @@ def inset(title, lon0, lat0, lon1, lat1, route, ferry, note, polygons):
             print(f"INSET POINT ON LAND {title} {lat:.5f},{lon:.5f}", file=sys.stderr)
     land = land_path(mask, nx, ny, cell)
     coast = coast_d(project)
-    depth = contour_d(project, lon0, lat0, lon1, lat1)
+    depth = contour_d(RED_LINES, project, lon0, lat0, lon1, lat1)
+    flat = contour_d(GREEN_LINES, project, lon0, lat0, lon1, lat1)
     x1, y1 = project(route[0][1], route[0][0])
     x2, y2 = project(route[1][1], route[1][0])
     ang = math.atan2(y2 - y1, x2 - x1)
@@ -298,6 +302,7 @@ def inset(title, lon0, lat0, lon1, lat1, route, ferry, note, polygons):
       <rect width="{width:.0f}" height="{height:.0f}" fill="#d5e3ee"/>
       <path d="{land}" class="land"/>
       <path d="{coast}" class="icoast"/>
+      <path d="{flat}" class="iflat"/>
       <path d="{depth}" class="id2"/>
       {ferry_svg}
       <line x1="{x1:.0f}" y1="{y1:.0f}" x2="{x2:.0f}" y2="{y2:.0f}" class="iroute"/>
@@ -368,10 +373,12 @@ def main():
     print(f"map {w_m:.0f} x {h_m:.0f} m  panel {map_w_mm:.0f} x {map_h_mm:.1f} mm")
     land = land_path(mask, nx, ny, cell)
     coast = coast_d(lambda lon, lat: (mx(lon), my(lat)))
-    depth = contour_d(lambda lon, lat: (mx(lon), my(lat)), LON0, LAT0, LON1, LAT1)
+    project = lambda lon, lat: (mx(lon), my(lat))
+    depth = contour_d(RED_LINES, project, LON0, LAT0, LON1, LAT1)
+    flat = contour_d(GREEN_LINES, project, LON0, LAT0, LON1, LAT1)
     on_land = 0
     seen = 0
-    for line in DEPTH_LINES:
+    for line in RED_LINES:
         for lon, lat in line:
             if not (LON0 <= lon <= LON1 and LAT0 <= lat <= LAT1):
                 continue
@@ -532,7 +539,8 @@ def main():
   svg.map {{ width: 100%; height: 100%; display: block; }}
   .land {{ fill: #efe6d6; }}
   .coast {{ fill: none; stroke: #243038; stroke-width: 16; stroke-linejoin: round; stroke-linecap: round; }}
-  .d2 {{ fill: none; stroke: #0c5f86; stroke-width: 14; stroke-linejoin: round; stroke-linecap: round; }}
+  .flat {{ fill: none; stroke: #0c6b28; stroke-width: 14; stroke-linejoin: round; stroke-linecap: round; }}
+  .d2 {{ fill: none; stroke: #d10000; stroke-width: 16; stroke-linejoin: round; stroke-linecap: round; }}
   .grid {{ stroke: rgba(28,25,21,0.22); stroke-width: 8; }}
   .gridlab {{ font-size: 118px; fill: #3d4650; }}
   .hazard {{ stroke: #9a1b1b; stroke-width: 28; stroke-linecap: round; }}
@@ -595,7 +603,8 @@ def main():
   }}
   svg.inset {{ width: 100%; height: 100%; border: 0.2mm solid #1c1915; display: block; }}
   .icoast {{ fill: none; stroke: #243038; stroke-width: 3; stroke-linejoin: round; }}
-  .id2 {{ fill: none; stroke: #0c5f86; stroke-width: 3.5; stroke-linejoin: round; stroke-linecap: round; }}
+  .iflat {{ fill: none; stroke: #0c6b28; stroke-width: 3.2; stroke-linejoin: round; stroke-linecap: round; }}
+  .id2 {{ fill: none; stroke: #d10000; stroke-width: 3.6; stroke-linejoin: round; stroke-linecap: round; }}
   .iroute {{ stroke: #14365c; stroke-width: 6; fill: #14365c; }}
   .iferry {{ stroke: #b85a12; stroke-width: 4; stroke-dasharray: 10 7; }}
   .ipier {{ fill: #14365c; stroke: #fbf8f2; stroke-width: 2; }}
@@ -621,7 +630,7 @@ def main():
 <article class="sheet">
   <header>
     <div>
-      <h1>運航基準図<span>尾道水道と南の瀬戸　黒点は発着場、赤の×は暗礁か浅瀬。青線は2m等深線で岸側が2m以下。桟橋は結ばない</span></h1>
+      <h1>運航基準図<span>尾道水道と南の瀬戸　黒点は発着場、赤の×は暗礁か浅瀬。赤線は2m、緑線は干潟。桟橋は結ばない</span></h1>
     </div>
     <div class="meta">
       <div>発着場は独立　<b>尾道中央桟橋</b>・<b>新浜桟橋</b></div>
@@ -635,6 +644,7 @@ def main():
         <path d="{land}" class="land"/>
         {grid()}
         <path d="{coast}" class="coast"/>
+        <path d="{flat}" class="flat"/>
         <path d="{depth}" class="d2"/>
         {bridge_svg}
         {''.join(ferry_svg)}
@@ -687,12 +697,12 @@ def main():
         <p class="sub">尾道水道の潮流</p>
         <p>東流の最強は2.7ノット、西流の最強は2.5ノット。東流は尾道の低潮の約40分後から高潮の約40分後までで、最強は高潮の約2時間25分前。西流は高潮の約40分後から低潮の約40分後までで、最強は低潮の約2時間25分前。転流は来島海峡より約15分遅れる。当日の推算で確認する。流れは岸にほぼ並行するので、離着桟は当て舵と増減速の余裕を持つ。</p>
         <p class="sub">水深と狭い水面</p>
-        <p>水道の西口は約9m。戸崎瀬戸側の最狭部は幅約50m、水深約4mの箇所がある。尾道灯台が水道へ突出する。第二航路は中心線の両側各25mで、この最狭部ではこの幅が可航幅になる。法線は海図W119に従う。青線はHONDEXの2m等深線で、岸側が2m以下。魚探の地形図であり、海図W119の等深線そのものではない。</p>
+        <p>水道の西口は約9m。戸崎瀬戸側の最狭部は幅約50m、水深約4mの箇所がある。尾道灯台が水道へ突出する。第二航路は中心線の両側各25mで、この最狭部ではこの幅が可航幅になる。法線は海図W119に従う。赤線はHONDEXの2m等深線、緑線は干潟。岸側が浅い。魚探の地形図であり、海図W119の等深線そのものではない。</p>
         <p class="sub">暗礁と浅瀬（海図W119・W114、灯台表）</p>
         <p>細島北端の西北西、34°22′24″N 133°08′21″E。灯標が暗礁の上に立つ。北が航路、南は島と干出する浅瀬。灯台表4471。島の西側は大潮で干出する浅瀬で、灯台表4472.5の灯浮標（佐木島灯台の北北東方約1.6km）がその北西側を示す。図の浅瀬は干出部の概位。</p>
         <p>布刈瀬戸、34°21.9′N 133°10.4′E。干出する岩の灯浮標で、大浜埼灯台の北方約760m。岩は灯浮標と南の岬の間にもあるので、灯浮標の陸側を通らない。水路通報（書誌411の4470）、海図W119・W114。</p>
         <p>三原瀬戸側、34°21.6′N 133°07.5′E。岩の上に灯標がある。灯台表4472。佐木島灯台の南東方約2.1kmと約2.4kmにも暗礁と浅瀬の灯浮標がある。図の西端なので、通るときは海図で位置を見る。</p>
-        <p>渡船は土堂―兼吉と駅前―富浜。福本渡船は令和7年3月31日廃止。戸崎瀬戸にも横断する船がある。布刈瀬戸は大型船が多く潮流が強い。横島・百島方面の定置網とのり養殖は、水路誌では距岸約3海里に及ぶ。低潮時は青線の岸側と、×印の暗礁・浅瀬に近づかない。</p>
+        <p>渡船は土堂―兼吉と駅前―富浜。福本渡船は令和7年3月31日廃止。戸崎瀬戸にも横断する船がある。布刈瀬戸は大型船が多く潮流が強い。横島・百島方面の定置網とのり養殖は、水路誌では距岸約3海里に及ぶ。低潮時は赤線の岸側、緑線の干潟、×印の暗礁と浅瀬に近づかない。</p>
       </section>
       <section class="other">
         <h2>（3）航行の安全を確保するため必要な事項</h2>
@@ -714,7 +724,7 @@ def main():
   </div>
   <footer>
     出典：海上保安庁『瀬戸内海水路誌』追補（書誌103、令和8年1月30日）の尾道水道、阿伏兎瀬戸～戸崎瀬戸。灯台表（書誌411）4470・4471・4472・4472.5。布刈瀬戸の灯浮標は水路通報第48号（令和7年、海図W119・W114）。細島西側の干出する浅瀬の概位は、その灯浮標が示す干出部。港則法第3条・第11条・第12条・第13条・第16条・第18条。港則法施行規則第34条・別表第二。中央桟橋の位置はおのみち海の駅の公表値。新浜桟橋、渡船場、岸線はOpenStreetMap（令和8年11月）を模式化。
-    本図は運航基準の模式図であり、航海用海図ではない。範囲は尾道水道と南の瀬戸で、北は岸の直後で切る。針路と距離は世界測地系の概算。青線はWeb海図 by HONDEXの2m等深線（岸側が2m以下）で、海図W119の等深線ではない。暗礁と浅瀬の位置は灯台表と水路通報による。航海には最新の海図、潮汐表、水路通報と、船長の判断を用いる。印刷はA3横、倍率100%、余白なし。
+    本図は運航基準の模式図であり、航海用海図ではない。範囲は尾道水道と南の瀬戸で、北は岸の直後で切る。針路と距離は世界測地系の概算。赤線はWeb海図 by HONDEXの2m等深線、緑線は同図の干潟で、海図W119の等深線ではない。暗礁と浅瀬の位置は灯台表と水路通報による。航海には最新の海図、潮汐表、水路通報と、船長の判断を用いる。印刷はA3横、倍率100%、余白なし。
   </footer>
 </article>
 </body>
