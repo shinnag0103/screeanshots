@@ -14,7 +14,8 @@ COAST = json.loads((ROOT / "coast.json").read_text())
 LINES = COAST["lines"]  # [lon, lat]
 BRIDGES = COAST["bridges"]
 
-# 10 km circle is centered on the published light, inside Onomichi port.
+# Sea within about 10 km of the port. The north edge sits just inland of the
+# Honshu shore so the mountains are not drawn.
 LIGHT_LAT, LIGHT_LON = 34.401780, 133.195424
 HALF_M = 11500.0
 LAT_REF = LIGHT_LAT
@@ -23,7 +24,17 @@ M_PER_DEG_LON = 111320.0 * math.cos(math.radians(LAT_REF))
 LON0 = LIGHT_LON - HALF_M / M_PER_DEG_LON
 LON1 = LIGHT_LON + HALF_M / M_PER_DEG_LON
 LAT0 = LIGHT_LAT - HALF_M / M_PER_DEG_LAT
-LAT1 = LIGHT_LAT + HALF_M / M_PER_DEG_LAT
+LAT1 = 34.424
+
+# Published positions of shoals and a reef. Depths are not invented.
+HAZARDS = [
+    # JTSB 2013広第163号, 概位
+    (34.390000, 133.168333, "北口浅所", 200, -60, "start"),
+    # JTSB 2015、第八順栄丸, 概位 34°24.4′N 133°14.5′E
+    (34.406667, 133.241667, "戸崎北浅所", 200, 40, "start"),
+    # 長太夫礁灯標。細島北端の西北西、暗礁上
+    (34.373333, 133.139167, "長太夫礁", 200, -40, "start"),
+]
 
 CHUO = (34.407550, 133.202417)  # おのみち海の駅「海から」
 NIIHAMA = (34.398801, 133.177452)  # OSM 尾道港 新浜桟橋
@@ -296,11 +307,14 @@ def main():
         ("tosaki", 34.4000, 133.2450, True),
         ("miyuki", 34.3820, 133.1720, True),
         ("mekari", 34.3520, 133.1780, True),
-        ("hills", 34.4400, 133.2000, False),
+        ("shore hinterland", 34.4180, 133.2000, False),
         ("mukaijima", 34.3950, 133.2000, False),
         ("innoshima", 34.3400, 133.1700, False),
         ("momoshima", 34.3720, 133.2700, False),
         ("lighthouse point", LIGHT_LAT, LIGHT_LON, False),
+        ("北口浅所", 34.390000, 133.168333, True),
+        ("戸崎北浅所", 34.406667, 133.241667, True),
+        ("長太夫礁", 34.373333, 133.139167, True),
     ]
     failed = False
     for name, lat, lon, expect in checks:
@@ -340,7 +354,7 @@ def main():
             labels.append(
                 f"<text x='{x:.0f}' y='{h_m - 80:.0f}' class='gridlab' text-anchor='middle'>{fmt_lon(lon)}</text>"
             )
-        for lat in (34.35, 34.40, 34.45):
+        for lat in (34.32, 34.36, 34.40):
             y = my(lat)
             lines.append(
                 f"<line x1='0' y1='{y:.0f}' x2='{w_m:.0f}' y2='{y:.0f}' class='grid'/>"
@@ -362,6 +376,17 @@ def main():
             f"<circle cx='{x:.0f}' cy='{y:.0f}' r='110' class='pier'/>"
             + label(lat, lon, text, dy=dy, css="pierlab")
         )
+
+    def hazard_mark(lat, lon, text, dx, dy, anchor):
+        x, y = mx(lon), my(lat)
+        arm = 170
+        return (
+            f"<line x1='{x - arm:.0f}' y1='{y - arm:.0f}' x2='{x + arm:.0f}' y2='{y + arm:.0f}' class='hazard'/>"
+            f"<line x1='{x - arm:.0f}' y1='{y + arm:.0f}' x2='{x + arm:.0f}' y2='{y - arm:.0f}' class='hazard'/>"
+            + label(lat, lon, text, dx=dx, dy=dy, anchor=anchor, css="caution")
+        )
+
+    hazards = "\n".join(hazard_mark(*item) for item in HAZARDS)
 
     cx, cy = mx(LIGHT_LON), my(LIGHT_LAT)
     ferry_svg = []
@@ -460,14 +485,16 @@ def main():
     min-width: 0;
     border: 0.35mm solid #1c1915;
     background: #d5e3ee;
-    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }}
-  svg.map {{ width: 100%; height: 100%; display: block; }}
+  svg.map {{ width: 100%; flex: 1 1 auto; min-height: 0; display: block; }}
   .land {{ fill: #efe6d6; }}
   .coast {{ fill: none; stroke: #243038; stroke-width: 55; stroke-linejoin: round; stroke-linecap: round; }}
   .grid {{ stroke: rgba(28,25,21,0.22); stroke-width: 12; }}
   .gridlab {{ font-size: 250px; fill: #3d4650; }}
-  .ring {{ fill: none; stroke: #14365c; stroke-width: 28; stroke-dasharray: 180 120; }}
+  .hazard {{ stroke: #9a1b1b; stroke-width: 32; stroke-linecap: round; }}
   .ferry {{ stroke: #b85a12; stroke-width: 80; stroke-dasharray: 90 70; }}
   .bridge {{ fill: none; stroke: #1c1915; stroke-width: 46; stroke-linecap: round; }}
   .pier {{ fill: #14365c; stroke: #fbf8f2; stroke-width: 16; }}
@@ -483,8 +510,7 @@ def main():
   .caution {{ font-size: 300px; font-weight: 700; fill: #7a2e0b; stroke: #fbf8f2; stroke-width: 70; paint-order: stroke fill; }}
   .light {{ fill: #1c1915; stroke: #fbf8f2; stroke-width: 12; }}
   .banner {{
-    position: absolute;
-    left: 0; right: 0; top: 0;
+    flex: 0 0 auto;
     background: rgba(251,248,242,0.94);
     border-bottom: 0.25mm solid #1c1915;
     font-size: 7.6pt;
@@ -560,15 +586,15 @@ def main():
     <div class="meta">
       <div>発着場は独立　<b>尾道中央桟橋</b>・<b>新浜桟橋</b></div>
       <div>海図 W119・W114・W1117・W1118　世界測地系　令和8年11月13日</div>
-      <div class="blanks">事業者名＿＿＿＿＿＿　船舶名＿＿＿＿＿＿　航海速力＿＿kn</div>
+      <div class="blanks">事業者名　<b>ネコノテ観光業</b>　船舶名　<b>ネコノテ観光業</b>　航海速力＿＿kn</div>
     </div>
   </header>
   <div class="main">
     <div class="mapwrap">
-      <svg class="map" viewBox="0 0 {w_m:.0f} {h_m:.0f}" xmlns="http://www.w3.org/2000/svg">
+      <div class="banner">黒点は発着場。赤の×は浅所または暗礁。橙の破線は渡船。北が上。岸の北は描かない。離着の針路は右の差し込み図で、二つの桟橋は結ばない。</div>
+      <svg class="map" viewBox="0 0 {w_m:.0f} {h_m:.0f}" preserveAspectRatio="xMidYMin meet" xmlns="http://www.w3.org/2000/svg">
         <path d="{land}" class="land"/>
         {grid()}
-        <circle cx="{cx:.0f}" cy="{cy:.0f}" r="10000" class="ring"/>
         <path d="{coast}" class="coast"/>
         {bridge_svg}
         {''.join(ferry_svg)}
@@ -576,27 +602,21 @@ def main():
         {pier_mark(*CHUO, "中央桟橋", -160)}
         {pier_mark(*NIIHAMA, "新浜桟橋", -160)}
         {label(LIGHT_LAT, LIGHT_LON, "尾道灯台", dx=80, dy=280, anchor="start")}
-        {label(34.4185, 133.1980, "尾道")}
+        {label(34.4160, 133.2050, "尾道")}
         {label(34.3860, 133.2100, "向島")}
         {label(34.3480, 133.1680, "因島")}
         {label(34.3822, 133.1580, "岩子島")}
         {label(34.3735, 133.2720, "百島")}
         {label(34.4048, 133.1865, "尾道水道", css="note")}
-        {label(34.3845, 133.1665, "御幸瀬戸", css="note")}
+        {label(34.3780, 133.1750, "御幸瀬戸", css="note")}
+        {label(34.3635, 133.1415, "細島", css="note")}
         {label(34.3500, 133.1830, "布刈瀬戸", css="note")}
         {label(34.3680, 133.1150, "三原瀬戸", css="note")}
         {label(34.3683, 133.2067, "高見山", css="note")}
         {label(34.3450, 133.2767, "横島", css="note")}
-        {label(34.4145, 133.2260, "尾道大橋 高さ34m", css="caution", anchor="start")}
-        {label(34.4145, 133.2260, "新尾道大橋 高さ36m", dy=340, css="caution", anchor="start")}
-        {label(34.3595, 133.1680, "因島大橋 航路限界50m", css="caution", anchor="end")}
-        {label(34.3728, 133.1765, "向島大橋 約13m", css="caution", anchor="start")}
-        {label(34.3933, 133.1555, "架空線 高さ51m", css="caution", anchor="start")}
-        {label(34.4008, 133.2485, "戸崎瀬戸・渡船", css="caution", anchor="start")}
-        {label(34.3088, 133.1485, "生口橋 航路限界26m（圏外）", css="caution", anchor="end")}
+        {label(34.4008, 133.2520, "戸崎瀬戸・渡船", css="note", anchor="start")}
         {label(34.3520, 133.2550, "定置網・のり養殖に注意", css="caution")}
-        {label(LIGHT_LAT, LIGHT_LON + 10000 / M_PER_DEG_LON, "10km", dx=120, dy=80, anchor="start", css="note")}
-        {label(LIGHT_LAT - 10000 / M_PER_DEG_LAT, LIGHT_LON, "10km", dx=280, dy=-220, anchor="start", css="note")}
+        {hazards}
         <g>
           <rect x="{w_m - scale - 700:.0f}" y="{h_m - 520:.0f}" width="{scale}" height="90" fill="#fbf8f2" stroke="#1c1915" stroke-width="16"/>
           <rect x="{w_m - scale - 700:.0f}" y="{h_m - 520:.0f}" width="{scale / 2:.0f}" height="90" fill="#1c1915"/>
@@ -605,7 +625,6 @@ def main():
           <text x="{w_m - 700:.0f}" y="{h_m - 580:.0f}" class="gridlab" text-anchor="end">5km</text>
         </g>
       </svg>
-      <div class="banner">黒点は発着場。円は尾道灯台から10km。橙の破線は渡船。橋の位置に黒線。北が上。離着の針路は右の差し込み図で、二つの桟橋は結ばない。</div>
     </div>
     <div class="side">
       <section class="route">
@@ -633,9 +652,9 @@ def main():
         <p>東流の最強は2.7ノット、西流の最強は2.5ノット。東流は尾道の低潮の約40分後から高潮の約40分後までで、最強は高潮の約2時間25分前。西流は高潮の約40分後から低潮の約40分後までで、最強は低潮の約2時間25分前。転流は来島海峡より約15分遅れる。当日の推算で確認する。流れは岸にほぼ並行するので、離着桟は当て舵と増減速の余裕を持つ。</p>
         <p class="sub">水深と狭い水面</p>
         <p>水道の西口は約9m。東口の最狭部は幅約50m、水深約4mの箇所がある。尾道灯台が水道へ突出する。第二航路は中心線の両側各25mで、東口最狭部ではこの幅が可航幅になる。法線は海図W119に従う。本図に等深線はない。</p>
-        <p class="sub">橋、架空線、渡船、漁具</p>
-        <p>尾道大橋は高さ34m、新尾道大橋は高さ36m。御幸瀬戸の向島大橋は高さ約13m、南口の架空線は高さ28m。水道西部（34°23.6′N 133°09.7′E）の架空線は高さ51m。高さは潮が上がると余裕が減る。因島大橋の航路限界は50mで、布刈瀬戸（幅約800m）は三原瀬戸航路の東口にあたり、大型船が多く潮流が強い。流速は推算で確認する。生口橋の航路限界26mは灯台から約11km、内海大橋の高さ30mは約12kmで、いずれも10km圏の外。</p>
-        <p>水道の渡船は土堂―兼吉と駅前―富浜の2航路。福本渡船は令和7年3月31日に廃止。戸崎瀬戸にも横断するフェリーと渡船がある。横島・百島方面には定置網とのり養殖があり、水路誌は距岸約3海里に及ぶものがある、と記す。</p>
+        <p class="sub">2m以下になり得る浅所と暗礁</p>
+        <p>北口浅所（34°23.4′N 133°10.1′E）。運輸安全委員会（2013広第163号）は、下げ潮末期に小型船が御幸瀬戸北口の浅所へ乗り揚げたと記す。岩子島北東端の緑色のブイの手前で止まる。戸崎北浅所（34°24.4′N 133°14.5′E）。同委員会（2015年、第八順栄丸）は、ほぼ低潮時に船尾喫水約2.8mの貨物船が浅所へ乗り揚げたと記す。低潮時は2mを切ることがあるので入らない。長太夫礁（34°22′24″N 133°08′21″E）は細島北端の西北西約500mの暗礁で、灯標が立つ。灯標の北が航路、南は細島と細ノ洲。細ノ洲は細島の西側にあり、大潮で干出する。向島大橋の直近には干出岩がある、とする案内がある。橋のそばは海図で干出岩を確認する。×の位置は概位で、2m等深線は海図W119による。</p>
+        <p>水道の渡船は土堂―兼吉と駅前―富浜の2航路。福本渡船は令和7年3月31日に廃止。戸崎瀬戸にも横断するフェリーと渡船がある。布刈瀬戸は大型船が多く潮流が強い。横島・百島方面には定置網とのり養殖があり、水路誌は距岸約3海里に及ぶものがある、と記す。</p>
       </section>
       <section class="other">
         <h2>（3）航行の安全を確保するため必要な事項</h2>
@@ -650,14 +669,14 @@ def main():
           <li>離桟時と着桟時に、地点名、時刻、天候、風向、風速、波浪、視程を運航管理者へ連絡する。</li>
           <li>中央桟橋は、尾道みなと祭と住吉花火大会の日は休業する。</li>
           <li>緊急通報は118。尾道海上保安部（港長）0848-22-2108、尾道市古浜町。</li>
-          <li>発航前に海図、潮汐表、水路通報、当日の潮流推算を確認する。</li>
+          <li>発航前に海図、潮汐表、水路通報、当日の潮流推算を確認する。低潮時は×印の浅所と暗礁へ近づかない。</li>
         </ul>
       </section>
     </div>
   </div>
   <footer>
-    出典：海上保安庁『瀬戸内海水路誌』追補（書誌103、令和8年1月30日）の尾道水道、阿伏兎瀬戸～戸崎瀬戸。港則法第3条・第11条・第12条・第13条・第16条・第18条。港則法施行規則第34条・別表第二。因島大橋・生口橋の航路限界は各橋の諸元。中央桟橋の位置はおのみち海の駅の公表値。新浜桟橋、渡船場、岸線はOpenStreetMap（令和8年11月）を模式化。
-    本図は運航基準の模式図であり、航海用海図ではない。半径10kmの中心は尾道灯台。針路と距離は世界測地系の概算。航海には最新の海図W119、W114、W1117、W1118、潮汐表、水路通報と、船長の判断を用いる。印刷はA3横、倍率100%、余白なし。
+    出典：海上保安庁『瀬戸内海水路誌』追補（書誌103、令和8年1月30日）の尾道水道、阿伏兎瀬戸～戸崎瀬戸。運輸安全委員会の乗揚調査（2013広第163号、2015年の第八順栄丸）。長太夫礁灯標の位置と細ノ洲の説明。港則法第3条・第11条・第12条・第13条・第16条・第18条。港則法施行規則第34条・別表第二。中央桟橋の位置はおのみち海の駅の公表値。新浜桟橋、渡船場、岸線はOpenStreetMap（令和8年11月）を模式化。
+    本図は運航基準の模式図であり、航海用海図ではない。図の範囲は尾道港から海上約10kmで、北は岸の直後で切る。針路と距離は世界測地系の概算。2m以下の水深と暗礁の正確な位置は海図W119による。航海には最新の海図、潮汐表、水路通報と、船長の判断を用いる。印刷はA3横、倍率100%、余白なし。
   </footer>
 </article>
 </body>
